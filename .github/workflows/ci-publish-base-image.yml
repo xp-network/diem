@@ -29,10 +29,11 @@ jobs:
       - name: Git Hooks and Checks
         run: ./scripts/git-checks.sh
       - id: changes
-        name: determine changes
-        uses: ./.github/actions/changes
-        with:
-          workflow-file: ci-publish-base-image.yml
+        #name: determine changes
+        #uses: ./.github/actions/changes
+        #with:
+        #  workflow-file: ci-publish-base-image.yml
+        run: echo "::set-output name=changes-target-branch::master"
       - name: build image
         run: docker build -f docker/ci/github/Dockerfile -t ${{ env.DOCKERHUB_ORG }}/build_environment:${{ steps.changes.outputs.changes-target-branch }} .
       - name: Sign in to dockerhub, install image signing cert.
