@@ -289,7 +289,7 @@ pub struct FieldHandle {
 // Definitions are the module code. So the set of types and functions in the module.
 
 /// `StructFieldInformation` indicates whether a struct is native or has user-specified fields
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
 #[cfg_attr(any(test, feature = "fuzzing"), proptest(no_params))]
 pub enum StructFieldInformation {
@@ -339,7 +339,7 @@ pub struct FieldInstantiation {
 
 /// A `StructDefinition` is a type definition. It either indicates it is native or defines all the
 /// user-specified fields declared on the type.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
 #[cfg_attr(any(test, feature = "fuzzing"), proptest(no_params))]
 pub struct StructDefinition {
@@ -371,7 +371,7 @@ impl StructDefinition {
 }
 
 /// A `FieldDefinition` is the definition of a field: its name and the field type.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
 #[cfg_attr(any(test, feature = "fuzzing"), proptest(no_params))]
 pub struct FieldDefinition {
