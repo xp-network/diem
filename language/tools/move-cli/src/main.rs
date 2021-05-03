@@ -10,7 +10,7 @@ use move_cli::{
 use move_core_types::{
     language_storage::TypeTag, parser, transaction_argument::TransactionArgument,
 };
-use std::{fs, path::Path};
+use std::{fs, io::prelude::*, path::Path};
 use structopt::StructOpt;
 
 #[derive(StructOpt)]
@@ -114,6 +114,8 @@ pub enum Command {
         /// deleted resources) will NOT be committed to disk.
         #[structopt(long = "dry-run", short = "n")]
         dry_run: bool,
+        #[structopt(long = "save_compile", short = "c")]
+        save_compile: Option<String>
     },
     /// Run expected value tests using the given batch file
     #[structopt(name = "test")]
@@ -199,8 +201,16 @@ fn main() -> Result<()> {
             type_args,
             gas_budget,
             dry_run,
+            save_compile
         } => {
             let state = mode.prepare_state(&move_args.build_dir, &move_args.storage_dir)?;
+            if let Some(f) = save_compile {
+                let mut fl = fs::OpenOptions::new().write(true).create(true).open(f)?;
+                let compile = commands::compile_script(&state, script_file, false)?.unwrap();
+                let mut datos = vec![];
+                compile.serialize(&mut datos)?;
+                fl.write(&datos)?;
+            }
             commands::run(
                 &state,
                 script_file,

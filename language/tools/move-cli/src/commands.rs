@@ -156,6 +156,46 @@ pub fn publish(
     Ok(())
 }
 
+pub fn compile_script(
+    state: &OnDiskStateView,
+    script_file: &str,
+    verbose: bool,
+) -> Result<Option<CompiledScript>> {
+    if verbose {
+        println!("Compiling transaction script...")
+    }
+    let (_files, compiled_units) = move_lang::move_compile_and_report(
+        &[script_file.to_string()],
+        &[state.interface_files_dir()?],
+        None,
+        false,
+        Flags::empty(),
+    )?;
+
+    let mut script_opt = None;
+    for c in compiled_units {
+        match c {
+            CompiledUnit::Script { script, .. } => {
+                if script_opt.is_some() {
+                    bail!("Error: Found more than one script")
+                }
+                script_opt = Some(script)
+            }
+            CompiledUnit::Module { ident, .. } => {
+                if verbose {
+                    println!(
+                        "Warning: Found module '{}' in file specified for the script. This \
+                         module will not be published.",
+                        ident
+                    )
+                }
+            }
+        }
+    }
+
+    Ok(script_opt)
+}
+
 pub fn run(
     state: &OnDiskStateView,
     script_file: &str,
@@ -167,46 +207,6 @@ pub fn run(
     dry_run: bool,
     verbose: bool,
 ) -> Result<()> {
-    fn compile_script(
-        state: &OnDiskStateView,
-        script_file: &str,
-        verbose: bool,
-    ) -> Result<Option<CompiledScript>> {
-        if verbose {
-            println!("Compiling transaction script...")
-        }
-        let (_files, compiled_units) = move_lang::move_compile_and_report(
-            &[script_file.to_string()],
-            &[state.interface_files_dir()?],
-            None,
-            false,
-            Flags::empty(),
-        )?;
-
-        let mut script_opt = None;
-        for c in compiled_units {
-            match c {
-                CompiledUnit::Script { script, .. } => {
-                    if script_opt.is_some() {
-                        bail!("Error: Found more than one script")
-                    }
-                    script_opt = Some(script)
-                }
-                CompiledUnit::Module { ident, .. } => {
-                    if verbose {
-                        println!(
-                            "Warning: Found module '{}' in file specified for the script. This \
-                             module will not be published.",
-                            ident
-                        )
-                    }
-                }
-            }
-        }
-
-        Ok(script_opt)
-    }
-
     let path = Path::new(script_file);
     if !path.exists() {
         bail!("Script file {:?} does not exist", path)
