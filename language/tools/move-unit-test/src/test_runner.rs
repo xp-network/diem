@@ -3,30 +3,43 @@
 
 use crate::{
     format_module_id,
-    test_reporter::{FailureReason, TestFailure, TestResults, TestStatistics},
+    test_reporter::{FailureReason, TestFailure, TestResults, TestRunInfo, TestStatistics},
 };
 use anyhow::Result;
 use colored::*;
-use move_binary_format::file_format::CompiledModule;
+use move_binary_format::{
+    errors::{PartialVMError, VMResult},
+    file_format::CompiledModule,
+};
 use move_core_types::{
+    effects::ChangeSet,
     gas_schedule::{CostTable, GasAlgebra, GasCost, GasUnits},
     identifier::IdentStr,
     value::serialize_values,
     vm_status::StatusCode,
 };
-use move_lang::unit_test::{ExpectedFailure, ModuleTestPlan, TestPlan};
+use move_lang::{
+    shared::Flags,
+    unit_test::{ExpectedFailure, ModuleTestPlan, TestCase, TestPlan},
+};
+use move_model::{model::GlobalEnv, run_model_builder_with_compilation_flags};
 use move_vm_runtime::{logging::NoContextLog, move_vm::MoveVM};
 use move_vm_test_utils::InMemoryStorage;
 use move_vm_types::gas_schedule::{zero_cost_schedule, GasStatus};
 use rayon::prelude::*;
-use std::{io::Write, marker::Send, sync::Mutex};
+use resource_viewer::MoveValueAnnotator;
+use std::{io::Write, marker::Send, sync::Mutex, time::Instant};
 
 /// Test state common to all tests
 #[derive(Debug)]
 pub struct SharedTestingConfig {
+    save_storage_state_on_failure: bool,
     execution_bound: u64,
     cost_table: CostTable,
     starting_storage_state: InMemoryStorage,
+    source_files: Vec<String>,
+    check_stackless_vm: bool,
+    verbose: bool,
 }
 
 #[derive(Debug)]
@@ -64,15 +77,54 @@ fn setup_test_storage<'a>(
     Ok(storage)
 }
 
+/// Print the updates to storage represented by `cs` in the context of the starting storage state
+/// `storage`.
+fn print_resources(cs: &ChangeSet, storage: &InMemoryStorage) -> Result<String> {
+    use std::fmt::Write;
+    let mut buf = String::new();
+    let annotator = MoveValueAnnotator::new(storage);
+    for (account_addr, account_state) in cs.accounts() {
+        writeln!(&mut buf, "0x{}:", account_addr.short_str_lossless())?;
+
+        for (tag, resource_opt) in account_state.resources() {
+            if let Some(resource) = resource_opt {
+                writeln!(
+                    &mut buf,
+                    "\t{}",
+                    format!("=> {}", annotator.view_resource(tag, resource)?).replace("\n", "\n\t")
+                )?;
+            }
+        }
+    }
+
+    Ok(buf)
+}
+
 impl TestRunner {
-    pub fn new(execution_bound: u64, num_threads: usize, tests: TestPlan) -> Result<Self> {
+    pub fn new(
+        execution_bound: u64,
+        num_threads: usize,
+        check_stackless_vm: bool,
+        verbose: bool,
+        save_storage_state_on_failure: bool,
+        tests: TestPlan,
+    ) -> Result<Self> {
+        let source_files = tests
+            .files
+            .keys()
+            .map(|filepath| filepath.to_string())
+            .collect();
         let modules = tests.module_info.values().map(|info| &info.0);
         let starting_storage_state = setup_test_storage(modules)?;
         Ok(Self {
             testing_config: SharedTestingConfig {
+                save_storage_state_on_failure,
                 starting_storage_state,
                 execution_bound,
                 cost_table: unit_cost_table(),
+                source_files,
+                check_stackless_vm,
+                verbose,
             },
             num_threads,
             tests,
@@ -112,6 +164,75 @@ impl TestRunner {
 }
 
 impl SharedTestingConfig {
+    fn execute_via_move_vm(
+        &self,
+        test_plan: &ModuleTestPlan,
+        function_name: &str,
+        test_info: &TestCase,
+    ) -> (VMResult<ChangeSet>, VMResult<Vec<Vec<u8>>>, TestRunInfo) {
+        let move_vm = MoveVM::new();
+        let mut session = move_vm.new_session(&self.starting_storage_state);
+        let mut gas_meter = GasStatus::new(&self.cost_table, GasUnits::new(self.execution_bound));
+        // TODO: collect VM logs if the verbose flag (i.e, `self.verbose`) is set
+        let log_context = NoContextLog::new();
+
+        let now = Instant::now();
+        let return_result = session.execute_function(
+            &test_plan.module_id,
+            &IdentStr::new(function_name).unwrap(),
+            vec![], // no ty args, at least for now
+            serialize_values(test_info.arguments.iter()),
+            &mut gas_meter,
+            &log_context,
+        );
+        let test_run_info = TestRunInfo::new(
+            function_name.to_string(),
+            now.elapsed(),
+            self.execution_bound - gas_meter.remaining_gas().get(),
+        );
+        (
+            session.finish().map(|(cs, _)| cs),
+            return_result,
+            test_run_info,
+        )
+    }
+
+    // TODO(mengxu): Add changeset return here
+    fn execute_via_stackless_vm(
+        &self,
+        env: &GlobalEnv,
+        test_plan: &ModuleTestPlan,
+        function_name: &str,
+        test_info: &TestCase,
+    ) -> VMResult<Vec<Vec<u8>>> {
+        bytecode_interpreter::interpret_with_default_pipeline(
+            env,
+            &test_plan.module_id,
+            &IdentStr::new(function_name).unwrap(),
+            &[], // no ty args, at least for now
+            &test_info.arguments,
+            self.verbose,
+        )
+    }
+
+    // The result returned by the stackless VM does not contain code offsets and indices. In order to
+    // do cross-vm comparison, we need to adapt the Move VM result by removing these fields.
+    fn adapt_move_vm_result(result: VMResult<Vec<Vec<u8>>>) -> VMResult<Vec<Vec<u8>>> {
+        result.map_err(|err| {
+            let (status_code, sub_status, message, location, _, _) = err.all_data();
+            let adapted = PartialVMError::new(status_code);
+            let adapted = match sub_status {
+                None => adapted,
+                Some(status_code) => adapted.with_sub_status(status_code),
+            };
+            let adapted = match message {
+                None => adapted,
+                Some(message) => adapted.with_message(message),
+            };
+            adapted.finish(location)
+        })
+    }
+
     fn exec_module_tests<W: Write>(
         &self,
         test_plan: &ModuleTestPlan,
@@ -149,25 +270,61 @@ impl SharedTestingConfig {
             .unwrap();
         };
 
-        for (function_name, test_info) in &test_plan.tests {
-            let move_vm = MoveVM::new();
-            let mut session = move_vm.new_session(&self.starting_storage_state);
-            let log_context = NoContextLog::new();
+        let stackless_model = if self.check_stackless_vm {
+            let model =
+                run_model_builder_with_compilation_flags(&self.source_files, &[], Flags::testing())
+                    .unwrap_or_else(|e| panic!("Unable to build stackless bytecode: {}", e));
+            Some(model)
+        } else {
+            None
+        };
 
-            match session.execute_function(
-                &test_plan.module_id,
-                &IdentStr::new(function_name).unwrap(),
-                vec![], // no ty args, at least for now
-                serialize_values(test_info.arguments.iter()),
-                &mut GasStatus::new(&self.cost_table, GasUnits::new(self.execution_bound)),
-                &log_context,
-            ) {
+        for (function_name, test_info) in &test_plan.tests {
+            let (cs_result, exec_result, test_run_info) =
+                self.execute_via_move_vm(test_plan, function_name, test_info);
+            let save_session_state = || {
+                if self.save_storage_state_on_failure {
+                    cs_result.ok().and_then(|changeset| {
+                        print_resources(&changeset, &self.starting_storage_state).ok()
+                    })
+                } else {
+                    None
+                }
+            };
+            if self.check_stackless_vm {
+                let stackless_vm_result = self.execute_via_stackless_vm(
+                    stackless_model.as_ref().unwrap(),
+                    test_plan,
+                    function_name,
+                    test_info,
+                );
+                let move_vm_result = Self::adapt_move_vm_result(exec_result.clone());
+                if stackless_vm_result != move_vm_result {
+                    fail(function_name);
+                    stats.test_failure(
+                        TestFailure::new(
+                            FailureReason::mismatch(move_vm_result, stackless_vm_result),
+                            test_run_info,
+                            None,
+                            None,
+                        ),
+                        &test_plan,
+                    );
+                    continue;
+                }
+            };
+            match exec_result {
                 Err(err) => match (test_info.expected_failure.as_ref(), err.sub_status()) {
                     // Ran out of ticks, report a test timeout and log a test failure
                     _ if err.major_status() == StatusCode::OUT_OF_GAS => {
                         timeout(function_name);
                         stats.test_failure(
-                            TestFailure::new(FailureReason::timeout(), function_name, Some(err)),
+                            TestFailure::new(
+                                FailureReason::timeout(),
+                                test_run_info,
+                                Some(err),
+                                save_session_state(),
+                            ),
                             &test_plan,
                         )
                     }
@@ -177,8 +334,9 @@ impl SharedTestingConfig {
                         stats.test_failure(
                             TestFailure::new(
                                 FailureReason::aborted(code),
-                                function_name,
+                                test_run_info,
                                 Some(err),
+                                save_session_state(),
                             ),
                             &test_plan,
                         )
@@ -189,7 +347,7 @@ impl SharedTestingConfig {
                         if err.major_status() == StatusCode::ABORTED && *code == other_code =>
                     {
                         pass(function_name);
-                        stats.test_success();
+                        stats.test_success(test_run_info, &test_plan);
                     }
                     // Expected the test to abort with a specific `code` but it aborted with a
                     // different `other_code`
@@ -198,8 +356,9 @@ impl SharedTestingConfig {
                         stats.test_failure(
                             TestFailure::new(
                                 FailureReason::wrong_abort(*code, other_code),
-                                function_name,
+                                test_run_info,
                                 Some(err),
+                                save_session_state(),
                             ),
                             &test_plan,
                         )
@@ -207,13 +366,25 @@ impl SharedTestingConfig {
                     // Expected the test to abort and it aborted, but we don't need to check the code
                     (Some(ExpectedFailure::Expected), Some(_)) => {
                         pass(function_name);
-                        stats.test_success();
+                        stats.test_success(test_run_info, &test_plan);
+                    }
+                    // Expected the test to abort and it aborted with internal error
+                    (Some(ExpectedFailure::Expected), None)
+                        if err.major_status() != StatusCode::EXECUTED =>
+                    {
+                        pass(function_name);
+                        stats.test_success(test_run_info, &test_plan);
                     }
                     // Unexpected return status from the VM, signal that we hit an unknown error.
                     (_, None) => {
                         fail(function_name);
                         stats.test_failure(
-                            TestFailure::new(FailureReason::unknown(), function_name, Some(err)),
+                            TestFailure::new(
+                                FailureReason::unknown(),
+                                test_run_info,
+                                Some(err),
+                                save_session_state(),
+                            ),
                             &test_plan,
                         )
                     }
@@ -223,13 +394,18 @@ impl SharedTestingConfig {
                     if test_info.expected_failure.is_some() {
                         fail(function_name);
                         stats.test_failure(
-                            TestFailure::new(FailureReason::no_abort(), function_name, None),
+                            TestFailure::new(
+                                FailureReason::no_abort(),
+                                test_run_info,
+                                None,
+                                save_session_state(),
+                            ),
                             &test_plan,
                         )
                     } else {
                         // Expected the test to execute fully and it did
                         pass(function_name);
-                        stats.test_success();
+                        stats.test_success(test_run_info, &test_plan);
                     }
                 }
             }

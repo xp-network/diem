@@ -19,9 +19,9 @@ envs = [
 ]
 
 [cargo.sccache.installer]
-version = "0.2.14-alpha.0"
-git = "https://github.com/rexhoffman/sccache.git"
-git-rev = "549babdd3866aa60dae01668c42ee00bf1e8c763"
+version = "0.2.16-alpha.0"
+git = "https://github.com/diem/sccache.git"
+git-rev = "ef50d87a58260c30767520045e242ccdbdb965af"
 features = [ "s3" ]
 
 
@@ -87,6 +87,13 @@ workspace-path = "devtools/x-core"
 name = "x-lint"
 version = "0.1.0"
 workspace-path = "devtools/x-lint"
+
+# Exclude the fail crate because the failpoints feature should only be enabled
+# for certain builds.
+[[hakari.omitted-packages]]
+name = "fail"
+version = "0.4.0"
+crates-io = true
 
 # This follows the same syntax as CargoOptionsSummary in guppy.
 [summaries.default]
@@ -157,6 +164,7 @@ features = ["fuzzing"]
 members = [
     # Please keep this list in alphabetical order!
 
+    "bytecode-interpreter-testsuite",
     "bytecode-verifier-tests",
     "cli",
     "cluster-test",
@@ -231,10 +239,10 @@ exclude = [
 existing_deps = [
     # Tier 0 - essential components that must be included in the first batch of crates getting
     #          moved to the new repo
-    ["move-lang", "fallible"],                                # copy_slice_to_vec
     ["move-lang", "diem-framework"],                          # sanity check to ensure that the diem-framework compiles
     ["invalid-mutations", "diem-proptest-helpers"],           # pick_slice_idxs
     ["bytecode-verifier-tests", "diem-framework-releases"],
+    ["bytecode-interpreter", "diem-crypto"],                  # implementation of native functions
     ["compiler", "diem-framework-releases"],
     ["move-vm-natives", "diem-crypto"],
     ["move-vm-runtime", "diem-logger"],
@@ -253,7 +261,6 @@ existing_deps = [
     ["language-benchmarks", "diem-vm"],
     ["language-benchmarks", "diem-types"],
     ["language-benchmarks", "diem-state-view"],
-    ["language-benchmarks", "diem-proptest-helpers"],
     ["test-generation", "language-e2e-tests"],
     ["test-generation", "diem-vm"],
     ["test-generation", "diem-types"],

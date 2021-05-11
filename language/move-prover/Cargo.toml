@@ -9,19 +9,21 @@ license = "Apache-2.0"
 [dependencies]
 # diem dependencies
 boogie-backend = { path = "boogie-backend" }
+move-binary-format = { path = "../move-binary-format" }
 move-lang = { path = "../move-lang" }
 move-model = { path = "../move-model" }
 docgen = { path = "docgen" }
 abigen = { path = "abigen" }
 errmapgen = { path = "errmapgen" }
 bytecode = { path = "bytecode" }
-move-binary-format = { path = "../move-binary-format" }
+bytecode-interpreter = { path = "interpreter" }
 diem-workspace-hack = { path = "../../common/workspace-hack" }
 move-ir-types = { path = "../move-ir/types" }
 
 # external dependencies
 async-trait = "0.1.42"
 anyhow = "1.0.38"
+atty = "0.2.14"
 clap = "2.33.3"
 codespan = "0.8.0"
 codespan-reporting = "0.8.0"

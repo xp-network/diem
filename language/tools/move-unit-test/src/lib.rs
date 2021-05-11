@@ -18,7 +18,7 @@ use std::{
 };
 use structopt::*;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "Move Unit Test", about = "Unit testing for Move code.")]
 pub struct UnitTestingConfig {
     /// Bound the number of instructions that can be executed by any one test.
@@ -43,9 +43,26 @@ pub struct UnitTestingConfig {
     )]
     pub num_threads: usize,
 
+    /// Report test statistics at the end of testing
+    #[structopt(name = "report_statistics", short = "s", long = "statistics")]
+    pub report_statistics: bool,
+
+    /// Show the storage state at the end of execution of a failing test
+    #[structopt(name = "global_state_on_error", short = "g", long = "state_on_error")]
+    pub report_storage_on_error: bool,
+
     /// Source files
     #[structopt(name = "sources")]
     pub source_files: Vec<String>,
+
+    /// Use the stackless bytecode interpreter to run the tests and cross check its results with
+    /// the execution result from Move VM.
+    #[structopt(long = "stackless")]
+    pub check_stackless_vm: bool,
+
+    /// Verbose mode
+    #[structopt(short = "v", long = "verbose")]
+    pub verbose: bool,
 }
 
 fn format_module_id(module_id: &ModuleId) -> String {
@@ -61,7 +78,7 @@ impl UnitTestingConfig {
     pub fn build_test_plan(&self) -> Option<TestPlan> {
         let mut compilation_env = CompilationEnv::new(Flags::testing());
         let (files, pprog_and_comments_res) =
-            move_lang::move_parse(&self.source_files, &[], None, false).ok()?;
+            move_lang::move_parse(&compilation_env, &self.source_files, &[], None).ok()?;
         let (_, pprog) = move_lang::unwrap_or_report_errors!(files, pprog_and_comments_res);
         let cfgir_result = move_lang::move_continue_up_to(
             &mut compilation_env,
@@ -109,6 +126,9 @@ impl UnitTestingConfig {
         let mut test_runner = TestRunner::new(
             self.instruction_execution_bound,
             self.num_threads,
+            self.check_stackless_vm,
+            self.verbose,
+            self.report_storage_on_error,
             test_plan,
         )
         .unwrap();
@@ -117,10 +137,12 @@ impl UnitTestingConfig {
             test_runner.filter(filter_str)
         }
 
-        test_runner
-            .run(&shared_writer)
-            .unwrap()
-            .summarize(&shared_writer)?;
+        let test_results = test_runner.run(&shared_writer).unwrap();
+        if self.report_statistics {
+            test_results.report_statistics(&shared_writer)?;
+        }
+        test_results.summarize(&shared_writer)?;
+
         let writer = shared_writer.into_inner().unwrap();
         Ok(writer)
     }

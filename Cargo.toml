@@ -89,6 +89,8 @@ members = [
     "language/move-prover/bytecode",
     "language/move-prover/docgen",
     "language/move-prover/errmapgen",
+    "language/move-prover/interpreter",
+    "language/move-prover/interpreter-testsuite",
     "language/move-prover/lab",
     "language/move-prover/test-utils",
     "language/move-stdlib",

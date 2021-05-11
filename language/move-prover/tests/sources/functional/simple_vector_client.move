@@ -1,13 +1,14 @@
+// separate_baseline: cvc4
+// TODO(cvc4): cvc4 produces multiple false positives for this file.
+
 // This file consists of a series of test cases which are client functions
 // using the standard vector module.
 module 0x42::TestVector {
     use 0x1::Vector;
 
-
     spec module {
         pragma verify = true;
     }
-
 
     // -----------------------------
     // Testing with concrete vectors
@@ -18,9 +19,7 @@ module 0x42::TestVector {
     spec fun test_vector_equal {
         aborts_if false;
         ensures _v == _v;
-        ensures old(_v) == old(_v);
         ensures _v == _v[0..len(_v)];
-        ensures old(_v) == old(_v[0..len(_v)]);
         ensures _w == _w;
         ensures old(_w) == old(_w);
         ensures _w == _w[0..len(_w)];

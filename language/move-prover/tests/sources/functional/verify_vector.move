@@ -1,15 +1,14 @@
+// separate_baseline: cvc4
+// TODO(cvc4): cvc4 produces multiple false positives for this source.
+
 // This file is created to verify the vector module in the standard library.
 // This file is basically a clone of `stdlib/modules/vector.move` with renaming the module and function names.
 // In this file, the functions with prefix of `verify_model` are verifying the corresponding built-in Boogie
 // procedures that they inline (e.g., `verify_model_remove`).
 // This file also verifies the actual Move implementations of non-native functions (e.g., `verify_remove`).
-
 module 0x42::VerifyVector {
     use 0x1::Vector;
 
-    spec module {
-        pragma verify = true;
-    }
 
     fun verify_model_empty<Element>() : vector<Element> {
         Vector::empty<Element>() // inlining the built-in Boogie procedure
@@ -185,7 +184,7 @@ module 0x42::VerifyVector {
     spec fun verify_model_append {
         ensures len(lhs) == old(len(lhs) + len(other));
         ensures lhs[0..len(old(lhs))] == old(lhs);
-        ensures lhs[len(old(lhs))..len(lhs)] == old(other);
+        ensures lhs[len(old(lhs))..len(lhs)] == other;
     }
 
     // Return true if the vector has no elements
